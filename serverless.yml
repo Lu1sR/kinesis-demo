@@ -1,0 +1,169 @@
+service: kinesis-demo
+
+frameworkVersion: '3'
+
+plugins:
+  - serverless-dotenv-plugin
+  - serverless-prune-versions
+
+custom:
+  prune:
+    automatic: true
+    number: 2
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: ${opt:region, 'us-east-1'}
+  memorySize: 1024
+  stage: ${opt:stage, 'dev'}
+  iam:
+      role:
+        statements:
+          - Effect: Allow
+            Action:
+              - kinesis:Get*
+              - kinesis:Put*
+              - kinesis:DescribeStream
+              - kinesis:ListStreams
+              - ec2:CreateNetworkInterface
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DeleteNetworkInterface
+            Resource: "*"
+
+functions:
+  producerLambda:
+    handler: handler.producer
+    events:
+      - http:
+          method: post
+          path: produce
+
+  consumerLambda:
+    handler: handler.consumer
+    events:
+      - stream:
+          type: kinesis
+          arn: !GetAtt kinesisDemoStream.Arn
+          batchSize: 20
+          startingPosition: TRIM_HORIZON
+
+  processLogs:
+    handler: handler.processLogs
+    role: ProcessLogsRole
+
+resources:
+  Resources:
+    ProcessedLogsBucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+        BucketName: my-processed-logs-bucket-${self:provider.stage}
+
+    kinesisDemoStream:
+      Type: "AWS::Kinesis::Stream"
+      Properties:
+        Name: kinesis-demo-stream-${self:provider.stage}
+        StreamModeDetails:
+          StreamMode: "ON_DEMAND"
+
+    kinesisDemoFirehose:
+      Type: "AWS::KinesisFirehose::DeliveryStream"
+      Properties:
+        DeliveryStreamName: kinesis-demo-${self:provider.stage}
+        DeliveryStreamType: KinesisStreamAsSource
+        KinesisStreamSourceConfiguration:
+          KinesisStreamARN: !GetAtt kinesisDemoStream.Arn
+          RoleARN: !GetAtt KinesisSourceRole.Arn 
+        ExtendedS3DestinationConfiguration:
+          BucketARN: !GetAtt ProcessedLogsBucket.Arn
+          BufferingHints:
+            IntervalInSeconds: 600
+            SizeInMBs: 50
+          CompressionFormat: UNCOMPRESSED
+          Prefix: 'clicks/!{timestamp:yyyy}/!{timestamp:MM}/!{timestamp:dd}/!{timestamp:HH}/'
+          ErrorOutputPrefix: 'failed/!{firehose:error-output-type}/!{timestamp:yyyy}/!{timestamp:MM}/!{timestamp:dd}/!{timestamp:HH}/'
+          RoleARN: !GetAtt FirehoseDeliveryRole.Arn
+          ProcessingConfiguration:
+            Enabled: 'true'
+            Processors:
+              - Type: Lambda
+                Parameters:
+                  - ParameterName: LambdaArn
+                    ParameterValue: !GetAtt ProcessLogsLambdaFunction.Arn
+
+    ProcessLogsRole:
+      Type: 'AWS::IAM::Role'
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: FirehoseProcessingPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - firehose:PutRecord
+                    - firehose:PutRecordBatch
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: "*"
+    
+    FirehoseDeliveryRole:
+      Type: "AWS::IAM::Role"
+      Properties:
+        RoleName: FirehoseDeliveryRole-${self:provider.region}-${self:provider.stage}
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: firehose.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: FirehoseDeliveryPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - "s3:PutObject"
+                    - "s3:GetBucketLocation"
+                    - "kinesis:DescribeStream"
+                    - "kinesis:GetShardIterator"
+                    - "kinesis:GetRecords"
+                    - "firehose:PutRecord"
+                    - "firehose:PutRecordBatch"
+                    - "lambda:InvokeFunction"
+                  Resource: "*"
+
+    KinesisSourceRole:
+      Type: 'AWS::IAM::Role'
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: 'firehose.amazonaws.com'
+              Action: 'sts:AssumeRole'
+        Policies:
+          - PolicyName: 'KinesisSourceRolePolicy'
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'kinesis:DescribeStream'
+                    - 'kinesis:GetShardIterator'
+                    - 'kinesis:GetRecords'
+                    - 'kinesis:ListShards'
+                  Resource: 
+                    - !GetAtt kinesisDemoStream.Arn
+             
