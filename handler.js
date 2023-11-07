@@ -4,10 +4,10 @@ const AWS = require('aws-sdk');
 const kinesis = new AWS.Kinesis();
 const { Client } = require('@opensearch-project/opensearch');
 const client = new Client({
-  node: 'https://search-kinesis-test-tppuytne62s64vh4e3njkjkyqi.us-east-1.es.amazonaws.com',
+  node: 'OPENSEARCH_ENDPOINT',
   auth: {
     username: 'admin',
-    password: 'Allgs_w1997'
+    password: 'admin'
   },
   ssl: {
     // Below options are necessary if your OpenSearch is using self-signed certificates
